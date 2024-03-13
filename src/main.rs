@@ -1,0 +1,224 @@
+use clap::Parser;
+use ignore::gitignore::GitignoreBuilder;
+use ignore::WalkBuilder;
+use indicatif::{ProgressBar, ProgressStyle};
+use log::{debug, error, warn};
+use std::fs;
+use std::path::Path;
+use strum_macros::Display;
+use walkdir::WalkDir;
+
+#[derive(Parser)]
+#[clap(author, version, about, long_about = None)]
+struct Cli {
+    /// Path to the local repository
+    #[clap(long)]
+    repo: String,
+
+    /// Patterns of files/directories to include
+    #[clap(long)]
+    include: Vec<String>,
+
+    /// Patterns of files/directories to ignore/exclude
+    #[clap(long, alias = "exclude")]
+    ignore: Vec<String>,
+}
+
+#[derive(Display)]
+enum FileType {
+    Text,
+    Binary,
+    SymbolicLink,
+}
+
+fn main() {
+    env_logger::init();
+
+    let cli = Cli::parse();
+    let repo_path = Path::new(&cli.repo);
+
+    if !repo_path.exists() {
+        error!("Repository path does not exist: {:?}", repo_path);
+        std::process::exit(1);
+    }
+
+    let mut gitignore = GitignoreBuilder::new(repo_path);
+    gitignore.add(".git/");
+
+    for ignore_pattern in &cli.ignore {
+        gitignore.add(&ignore_pattern);
+    }
+
+    let gitignore = gitignore.build().unwrap();
+
+    let include_patterns: Vec<_> = cli.include.iter().map(|p| p.as_str()).collect();
+    let walker = WalkBuilder::new(repo_path)
+        .standard_filters(false)
+        .follow_links(false)
+        .build();
+
+    let repo_name = repo_path.file_name().unwrap().to_str().unwrap();
+    let output_file = format!("{}-code.md", repo_name);
+    let mut output = String::new();
+    output.push_str(&format!("# `{}`\n\n", repo_name));
+
+    let progress_bar = ProgressBar::new_spinner();
+    progress_bar.set_style(
+        ProgressStyle::default_spinner()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+            .template("{spinner:.green} [{elapsed_precise}] Traversing {wide_msg}")
+            .unwrap(),
+    );
+
+    for entry in walker.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let rel_path = path.strip_prefix(repo_path).unwrap();
+
+        progress_bar.set_message(format!("{}", rel_path.display()));
+
+        if gitignore.matched(path, path.is_dir()).is_ignore() && !include_patterns.iter().any(|p| rel_path.starts_with(p)) {
+            debug!("Ignoring: {:?}", rel_path);
+            if path.is_dir() {
+                // Skip ignored directories
+                WalkDir::new(path).max_depth(1).into_iter().for_each(drop);
+            }
+            continue;
+        }
+
+        if path.is_dir() {
+            let dir_name = rel_path.to_str().unwrap();
+            let header_level = rel_path.components().count() + 1;
+            output.push_str(&format!("{} Directory `{}/`\n\n", "#".repeat(header_level), dir_name));
+
+            let tree_output = generate_tree_output(path);
+            output.push_str("```sh\n");
+            output.push_str(&tree_output);
+            output.push_str("```\n\n");
+        } else {
+            let file_type = detect_file_type(path);
+            match file_type {
+                FileType::Text => {
+                    let source_file = rel_path.to_str().unwrap();
+                    output.push_str(&format!("### Source file: `{}`\n\n", source_file));
+
+                    let file_extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+                    let code_block_lang = match file_extension {
+                        "rs" => "rust",
+                        "md" => "markdown",
+                        _ => "",
+                    };
+
+                    output.push_str(&format!("```{}\n", code_block_lang));
+                    match fs::read_to_string(path) {
+                        Ok(content) => output.push_str(&content),
+                        Err(e) => {
+                            warn!("Failed to read file: {:?}, error: {}", path, e);
+                            output.push_str("[Failed to read file contents]");
+                        }
+                    }
+                    output.push_str("\n```\n\n");
+                }
+                FileType::Binary => {
+                    warn!("Binary file not ignored by .gitignore: {:?}", rel_path);
+                    output.push_str(&format!("Binary file `{}` detected, consider adding it to .gitignore.\n\n", rel_path.display()));
+                }
+                FileType::SymbolicLink => {
+                    warn!("Symbolic link not ignored by .gitignore: {:?}", rel_path);
+                    output.push_str(&format!("Symbolic link `{}` detected, consider adding it to .gitignore.\n\n", rel_path.display()));
+                }
+            }
+        }
+
+        progress_bar.inc(1);
+    }
+
+    progress_bar.finish_and_clear();
+
+    match fs::write(&output_file, output) {
+        Ok(_) => println!("Markdown output written to: {}", output_file),
+        Err(e) => {
+            error!("Failed to write output file: {}, error: {}", output_file, e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn generate_tree_output(dir: &Path) -> String {
+    let mut output = String::new();
+    tree_recursive(dir, 0, &mut output);
+    output
+}
+
+fn tree_recursive(dir: &Path, level: usize, output: &mut String) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+
+    for entry in entries {
+        if let Ok(entry) = entry {
+            if entry.path().is_dir() {
+                dirs.push(entry);
+            } else {
+                files.push(entry);
+            }
+        }
+    }
+
+    dirs.sort_by(|a, b| a.path().cmp(&b.path()));
+    files.sort_by(|a, b| a.path().cmp(&b.path()));
+
+    for (idx, entry) in dirs.iter().enumerate() {
+        let path = entry.path();
+        let name = path.file_name().unwrap().to_str().unwrap();
+
+        let prefix = if idx == dirs.len() - 1 && files.is_empty() {
+            "`-- "
+        } else {
+            "|-- "
+        };
+
+        output.push_str(&format!("{}{}{}/\n", "    ".repeat(level), prefix, name));
+        tree_recursive(&path, level + 1, output);
+    }
+
+    for (idx, entry) in files.iter().enumerate() {
+        let path = entry.path();
+        let name = path.file_name().unwrap().to_str().unwrap();
+
+        let file_type = detect_file_type(&path);
+        let file_type_str = match file_type {
+            FileType::Text => "[text]",
+            FileType::Binary => "[binary]",
+            FileType::SymbolicLink => "[symlink]",
+        };
+
+        let prefix = if idx == files.len() - 1 {
+            "`-- "
+        } else {
+            "|-- "
+        };
+
+        output.push_str(&format!("{}{}{}    {}\n", "    ".repeat(level), prefix, name, file_type_str));
+    }
+}
+
+fn detect_file_type(path: &Path) -> FileType {
+    if path.is_symlink() {
+        FileType::SymbolicLink
+    } else {
+        match fs::read(path) {
+            Ok(content) => {
+                if content.is_ascii() {
+                    FileType::Text
+                } else {
+                    FileType::Binary
+                }
+            }
+            Err(_) => FileType::Binary,
+        }
+    }
+}
