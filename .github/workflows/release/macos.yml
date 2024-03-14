@@ -1,4 +1,4 @@
-name: Release
+name: Release macOS
 
 on:
   push:
@@ -6,18 +6,8 @@ on:
       - 'v*'
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: x86_64-apple-darwin
+  release-macos:
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v2
       
@@ -25,22 +15,22 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          target: ${{ matrix.target }}
+          target: x86_64-apple-darwin
           override: true
 
       - name: Build
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release --target ${{ matrix.target }}
+          args: --release --target x86_64-apple-darwin
 
       - name: Rename binary for release
         run: |
-          mv ./target/${{ matrix.target }}/release/repo2md ./target/${{ matrix.target }}/release/repo2md-${{ matrix.target }}
+          mv ./target/x86_64-apple-darwin/release/repo2md ./target/x86_64-apple-darwin/release/repo2md-x86_64-apple-darwin
 
       - name: Create Release
         id: create_release
-        if: matrix.os == 'ubuntu-latest'
+        if: github.ref == 'refs/heads/main'
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -56,6 +46,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./target/${{ matrix.target }}/release/repo2md-${{ matrix.target }}
-          asset_name: repo2md-${{ matrix.target }}
+          asset_path: ./target/x86_64-apple-darwin/release/repo2md-x86_64-apple-darwin
+          asset_name: repo2md-x86_64-apple-darwin
           asset_content_type: application/octet-stream
