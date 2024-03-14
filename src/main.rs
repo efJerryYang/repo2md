@@ -1,10 +1,11 @@
 use clap::Parser;
-use ignore::gitignore::GitignoreBuilder;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, warn};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 use strum_macros::Display;
 use walkdir::WalkDir;
 
@@ -54,8 +55,9 @@ fn main() {
     }
     // add `.git/` to the ignore list
     gitignore.add_line(None, ".git/**").unwrap();
+    // add content of `.gitignore` to the ignore list
+    gitignore.add(".gitignore");
 
-    let gitignore = gitignore.build().unwrap();
     let include_patterns: Vec<_> = cli.include.iter().map(|p| p.as_str()).collect();
     let walker = WalkBuilder::new(repo_path)
         .standard_filters(false)
@@ -83,7 +85,8 @@ fn main() {
         let rel_path = path.strip_prefix(repo_path).unwrap();
         progress_bar.set_message(format!("{}", rel_path.display()));
         let rel_path_buf = rel_path.to_path_buf();
-        if gitignore.matched(&rel_path_buf, rel_path_buf.is_dir()).is_ignore() && !include_patterns.iter().any(|p| rel_path.starts_with(p)) {
+
+        if gitignore.clone().build().unwrap().matched(&rel_path_buf, rel_path_buf.is_dir()).is_ignore() && !include_patterns.iter().any(|p| rel_path.starts_with(p)) {
             debug!("Ignoring: {:?}", rel_path);
             if path.is_dir() {
                 // Skip ignored directories
@@ -95,8 +98,14 @@ fn main() {
             let dir_name = rel_path.to_str().unwrap();
             let header_level = rel_path.components().count() + 2;
             output.push_str(&format!("{} Directory `{}/`\n\n", "#".repeat(header_level), dir_name));
-
-            let tree_output = generate_tree_output(path);
+            
+            // This should allow nested directories with .gitignore (not tested yet)
+            let mut gitignore = gitignore.clone();
+            gitignore.add(".gitignore");
+            let gitignore = gitignore.build().unwrap();
+            
+            let mut ignored_dirs = HashSet::new();
+            let tree_output = generate_tree_output(&path, &gitignore, &mut ignored_dirs);
             output.push_str("```sh\n");
             output.push_str(&tree_output);
             output.push_str("```\n\n");
@@ -147,14 +156,13 @@ fn main() {
         }
     }
 }
-
-fn generate_tree_output(dir: &Path) -> String {
+fn generate_tree_output(dir: &Path, gitignore: &Gitignore, ignored_dirs: &mut HashSet<PathBuf>) -> String {
     let mut output = String::new();
-    tree_recursive(dir, 0, &mut output);
+    tree_recursive(dir, 0, gitignore, ignored_dirs, &mut output);
     output
 }
 
-fn tree_recursive(dir: &Path, level: usize, output: &mut String) {
+fn tree_recursive(dir: &Path, level: usize, gitignore: &Gitignore, ignored_dirs: &mut HashSet<PathBuf>, output: &mut String) {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return,
@@ -165,7 +173,12 @@ fn tree_recursive(dir: &Path, level: usize, output: &mut String) {
 
     for entry in entries {
         if let Ok(entry) = entry {
-            if entry.path().is_dir() {
+            let path = entry.path();
+            if gitignore.matched_path_or_any_parents(&path, path.is_dir()).is_ignore() {
+                ignored_dirs.insert(path.clone());
+                continue;
+            }
+            if path.is_dir() {
                 dirs.push(entry);
             } else {
                 files.push(entry);
@@ -178,6 +191,9 @@ fn tree_recursive(dir: &Path, level: usize, output: &mut String) {
 
     for (idx, entry) in dirs.iter().enumerate() {
         let path = entry.path();
+        if ignored_dirs.contains(&path) {
+            continue;
+        }
         let name = path.file_name().unwrap().to_str().unwrap();
 
         let prefix = if idx == dirs.len() - 1 && files.is_empty() {
@@ -187,11 +203,14 @@ fn tree_recursive(dir: &Path, level: usize, output: &mut String) {
         };
 
         output.push_str(&format!("{}{}{}/\n", "    ".repeat(level), prefix, name));
-        tree_recursive(&path, level + 1, output);
+        tree_recursive(&path, level + 1, gitignore, ignored_dirs, output);
     }
 
     for (idx, entry) in files.iter().enumerate() {
         let path = entry.path();
+        if ignored_dirs.contains(&path) {
+            continue;
+        }
         let name = path.file_name().unwrap().to_str().unwrap();
 
         let file_type = detect_file_type(&path);
@@ -217,7 +236,7 @@ fn detect_file_type(path: &Path) -> FileType {
     } else {
         match fs::read(path) {
             Ok(content) => {
-                if content.is_ascii() {
+                if std::str::from_utf8(&content).is_ok() {
                     FileType::Text
                 } else {
                     FileType::Binary
