@@ -1,51 +1,51 @@
-name: Release macOS
+# name: Release macOS
 
-on:
-  push:
-    tags:
-      - 'v*'
+# on:
+#   push:
+#     tags:
+#       - 'v*'
 
-jobs:
-  release-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v2
+# jobs:
+#   release-macos:
+#     runs-on: macos-latest
+#     steps:
+#       - uses: actions/checkout@v2
       
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: x86_64-apple-darwin
-          override: true
+#       - name: Set up Rust
+#         uses: actions-rs/toolchain@v1
+#         with:
+#           toolchain: stable
+#           target: x86_64-apple-darwin
+#           override: true
 
-      - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --target x86_64-apple-darwin
+#       - name: Build
+#         uses: actions-rs/cargo@v1
+#         with:
+#           command: build
+#           args: --release --target x86_64-apple-darwin
 
-      - name: Rename binary for release
-        run: |
-          mv ./target/x86_64-apple-darwin/release/repo2md ./target/x86_64-apple-darwin/release/repo2md-x86_64-apple-darwin
+#       - name: Rename binary for release
+#         run: |
+#           mv ./target/x86_64-apple-darwin/release/repo2md ./target/x86_64-apple-darwin/release/repo2md-x86_64-apple-darwin
 
-      - name: Create Release
-        id: create_release
-        if: github.ref == 'refs/heads/main'
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
+#       - name: Create Release
+#         id: create_release
+#         if: github.ref == 'refs/heads/main'
+#         uses: actions/create-release@v1
+#         env:
+#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#         with:
+#           tag_name: ${{ github.ref }}
+#           release_name: Release ${{ github.ref }}
+#           draft: false
+#           prerelease: false
 
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./target/x86_64-apple-darwin/release/repo2md-x86_64-apple-darwin
-          asset_name: repo2md-x86_64-apple-darwin
-          asset_content_type: application/octet-stream
+#       - name: Upload Release Asset
+#         uses: actions/upload-release-asset@v1
+#         env:
+#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#         with:
+#           upload_url: ${{ steps.create_release.outputs.upload_url }}
+#           asset_path: ./target/x86_64-apple-darwin/release/repo2md-x86_64-apple-darwin
+#           asset_name: repo2md-x86_64-apple-darwin
+#           asset_content_type: application/octet-stream
