@@ -29,5 +29,7 @@ cargo run -- <path_to_repo> [options]
 See [example_repo2md.md](example_repo2md.md) for an example of the output of this tool.
 
 ```sh
-cargo run --  path/to/project/ --ignore benchmarks/ .idea/
+cargo run --  .
+# Or
+repo2md .
 ```

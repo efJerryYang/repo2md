@@ -35,7 +35,24 @@ enum FileType {
 fn main() {
     env_logger::init();
 
-    let cli = Cli::parse();
+    let cli = Cli::try_parse();
+    let cli = match cli {
+        Ok(cli) => cli,
+        Err(e) => {
+            if e.to_string().contains("not provided") {
+                eprintln!("Error: No repository path provided.");
+                eprintln!("Hint: Maybe you wanted to say 'repo2md .'?");
+                std::process::exit(1);
+            } else if e.to_string().contains("Usage") {
+                println!("{}", e);
+                std::process::exit(0);
+            } else {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+    };
+    
     let repo_path_buf = Path::new(&cli.repo).canonicalize().unwrap();
     let repo_path = repo_path_buf.as_path();
 
