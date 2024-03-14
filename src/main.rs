@@ -69,7 +69,7 @@ fn main() {
         .build();
 
     let repo_name = repo_path.file_name().unwrap().to_str().unwrap();
-    let output_file = format!("{}-repo2md.md", repo_name);
+    let output_file = format!("{}_repo2md.md", repo_name);
     let mut output = String::new();
     output.push_str(&format!("# `{}`\n\n", repo_name));
 
