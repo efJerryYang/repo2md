@@ -8,17 +8,39 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
+      
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-      - uses: actions-rs/cargo@v1
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Build
+        uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release
+          args: --release --target ${{ matrix.target }}
+
+      - name: Rename binary for release
+        run: |
+          mv ./target/${{ matrix.target }}/release/repo2md ./target/${{ matrix.target }}/release/repo2md-${{ matrix.target }}
+
       - name: Create Release
         id: create_release
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -27,12 +49,13 @@ jobs:
           release_name: Release ${{ github.ref }}
           draft: false
           prerelease: false
+
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./target/release/repo2md
-          asset_name: repo2md
+          asset_path: ./target/${{ matrix.target }}/release/repo2md-${{ matrix.target }}
+          asset_name: repo2md-${{ matrix.target }}
           asset_content_type: application/octet-stream
