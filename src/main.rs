@@ -13,15 +13,15 @@ use walkdir::WalkDir;
 #[clap(author, version, about, long_about = None)]
 struct Cli {
     /// Path to the local repository
-    #[clap(long)]
+    #[clap(value_parser)]
     repo: String,
 
     /// Patterns of files/directories to include
-    #[clap(long)]
+    #[clap(long, value_parser, num_args = 1..)]
     include: Vec<String>,
 
     /// Patterns of files/directories to ignore/exclude
-    #[clap(long, alias = "exclude")]
+    #[clap(long, alias = "exclude", value_parser, num_args = 1..)]
     ignore: Vec<String>,
 }
 
@@ -62,9 +62,10 @@ fn main() {
     let walker = WalkBuilder::new(repo_path)
         .standard_filters(false)
         .follow_links(false)
-        .git_ignore(true) // FIXME: It claims to include `.gitignore` by default, but actually not
+        .git_ignore(true)
         .git_exclude(true)
         .require_git(false)
+        .parents(true) // This should allow nested directories with .gitignore (not tested yet)
         .build();
 
     let repo_name = repo_path.file_name().unwrap().to_str().unwrap();
@@ -80,13 +81,13 @@ fn main() {
             .unwrap(),
     );
 
+    let gitignore = gitignore.build().unwrap();
     for entry in walker.filter_map(|e| e.ok()) {
         let path = entry.path();
         let rel_path = path.strip_prefix(repo_path).unwrap();
-        progress_bar.set_message(format!("{}", rel_path.display()));
         let rel_path_buf = rel_path.to_path_buf();
-
-        if gitignore.clone().build().unwrap().matched(&rel_path_buf, rel_path_buf.is_dir()).is_ignore() && !include_patterns.iter().any(|p| rel_path.starts_with(p)) {
+        
+        if gitignore.matched(&rel_path_buf, rel_path_buf.is_dir()).is_ignore() && !include_patterns.iter().any(|p| rel_path.starts_with(p)) {
             debug!("Ignoring: {:?}", rel_path);
             if path.is_dir() {
                 // Skip ignored directories
@@ -94,15 +95,11 @@ fn main() {
             }
             continue;
         }
+        progress_bar.set_message(format!("{}", rel_path.display()));
         if path.is_dir() {
             let dir_name = rel_path.to_str().unwrap();
             let header_level = rel_path.components().count() + 2;
             output.push_str(&format!("{} Directory `{}/`\n\n", "#".repeat(header_level), dir_name));
-            
-            // This should allow nested directories with .gitignore (not tested yet)
-            let mut gitignore = gitignore.clone();
-            gitignore.add(".gitignore");
-            let gitignore = gitignore.build().unwrap();
             
             let mut ignored_dirs = HashSet::new();
             let tree_output = generate_tree_output(&path, &gitignore, &mut ignored_dirs);
