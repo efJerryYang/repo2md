@@ -35,7 +35,8 @@ fn main() {
     env_logger::init();
 
     let cli = Cli::parse();
-    let repo_path = Path::new(&cli.repo);
+    let repo_path_buf = Path::new(&cli.repo).canonicalize().unwrap();
+    let repo_path = repo_path_buf.as_path();
 
     if !repo_path.exists() {
         error!("Repository path does not exist: {:?}", repo_path);
@@ -43,22 +44,29 @@ fn main() {
     }
 
     let mut gitignore = GitignoreBuilder::new(repo_path);
-    gitignore.add(".git/");
 
     for ignore_pattern in &cli.ignore {
-        gitignore.add(&ignore_pattern);
+        let mut pattern = ignore_pattern.clone();
+        if pattern.ends_with('/') {
+            pattern.push_str("**");
+        }
+        gitignore.add_line(None, &pattern).unwrap();
     }
+    // add `.git/` to the ignore list
+    gitignore.add_line(None, ".git/**").unwrap();
 
     let gitignore = gitignore.build().unwrap();
-
     let include_patterns: Vec<_> = cli.include.iter().map(|p| p.as_str()).collect();
     let walker = WalkBuilder::new(repo_path)
         .standard_filters(false)
         .follow_links(false)
+        .git_ignore(true) // FIXME: It claims to include `.gitignore` by default, but actually not
+        .git_exclude(true)
+        .require_git(false)
         .build();
 
     let repo_name = repo_path.file_name().unwrap().to_str().unwrap();
-    let output_file = format!("{}-code.md", repo_name);
+    let output_file = format!("{}-repo2md.md", repo_name);
     let mut output = String::new();
     output.push_str(&format!("# `{}`\n\n", repo_name));
 
@@ -73,10 +81,9 @@ fn main() {
     for entry in walker.filter_map(|e| e.ok()) {
         let path = entry.path();
         let rel_path = path.strip_prefix(repo_path).unwrap();
-
         progress_bar.set_message(format!("{}", rel_path.display()));
-
-        if gitignore.matched(path, path.is_dir()).is_ignore() && !include_patterns.iter().any(|p| rel_path.starts_with(p)) {
+        let rel_path_buf = rel_path.to_path_buf();
+        if gitignore.matched(&rel_path_buf, rel_path_buf.is_dir()).is_ignore() && !include_patterns.iter().any(|p| rel_path.starts_with(p)) {
             debug!("Ignoring: {:?}", rel_path);
             if path.is_dir() {
                 // Skip ignored directories
@@ -84,10 +91,9 @@ fn main() {
             }
             continue;
         }
-
         if path.is_dir() {
             let dir_name = rel_path.to_str().unwrap();
-            let header_level = rel_path.components().count() + 1;
+            let header_level = rel_path.components().count() + 2;
             output.push_str(&format!("{} Directory `{}/`\n\n", "#".repeat(header_level), dir_name));
 
             let tree_output = generate_tree_output(path);
@@ -105,7 +111,7 @@ fn main() {
                     let code_block_lang = match file_extension {
                         "rs" => "rust",
                         "md" => "markdown",
-                        _ => "",
+                        file_extension => file_extension,
                     };
 
                     output.push_str(&format!("```{}\n", code_block_lang));
@@ -133,8 +139,7 @@ fn main() {
     }
 
     progress_bar.finish_and_clear();
-
-    match fs::write(&output_file, output) {
+    match fs::write(&output_file, output.trim_end().to_string() + "\n") {
         Ok(_) => println!("Markdown output written to: {}", output_file),
         Err(e) => {
             error!("Failed to write output file: {}, error: {}", output_file, e);
