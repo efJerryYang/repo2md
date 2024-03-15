@@ -1,5 +1,5 @@
 use clap::Parser;
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use ignore::gitignore::GitignoreBuilder;
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, warn};
@@ -73,7 +73,9 @@ fn main() {
     // add `.git/` to the ignore list
     gitignore.add_line(None, ".git/**").unwrap();
     // add content of `.gitignore` to the ignore list
-    gitignore.add(".gitignore");
+    gitignore.add(repo_path.join(".gitignore"));
+    gitignore.add(repo_path.join(".git/info/exclude"));
+    debug!("Gitignore: {:?}", &gitignore);
 
     let include_patterns: Vec<_> = cli.include.iter().map(|p| p.as_str()).collect();
     let walker = WalkBuilder::new(repo_path)
@@ -113,7 +115,7 @@ fn main() {
             }
             continue;
         }
-        dbg!(path);
+        // dbg!(path);
         progress_bar.set_message(format!("{}", rel_path.display()));
         if path.is_dir() {
             let mut dir_entries = Vec::new();
