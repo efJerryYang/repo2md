@@ -3,9 +3,9 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, warn};
-use std::fs;
+use std::fs::{self, DirEntry};
 use std::path::{Path, PathBuf};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use strum_macros::Display;
 use walkdir::WalkDir;
 
@@ -97,34 +97,46 @@ fn main() {
             .template("{spinner:.green} [{elapsed_precise}] Traversing {wide_msg}")
             .unwrap(),
     );
+    // dbg!(&gitignore);
 
     let gitignore = gitignore.build().unwrap();
+    let mut filtered_entries: HashMap<PathBuf, Vec<DirEntry>> = HashMap::new();
     for entry in walker.filter_map(|e| e.ok()) {
         let path = entry.path();
         let rel_path = path.strip_prefix(repo_path).unwrap();
         let rel_path_buf = rel_path.to_path_buf();
         
         if gitignore.matched(&rel_path_buf, rel_path_buf.is_dir()).is_ignore() && !include_patterns.iter().any(|p| rel_path.starts_with(p)) {
-            debug!("Ignoring: {:?}", rel_path);
             if path.is_dir() {
                 // Skip ignored directories
                 WalkDir::new(path).max_depth(1).into_iter().for_each(drop);
             }
             continue;
         }
+        dbg!(path);
         progress_bar.set_message(format!("{}", rel_path.display()));
         if path.is_dir() {
+            let mut dir_entries = Vec::new();
+            for entry in fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                let entry_path = entry.path();
+                if !gitignore.matched_path_or_any_parents(&entry_path, entry_path.is_dir()).is_ignore() {
+                    dir_entries.push(entry);
+                }
+            }
+            filtered_entries.insert(path.to_path_buf(), dir_entries);
             let dir_name = rel_path.to_str().unwrap();
             let header_level = rel_path.components().count() + 2;
             output.push_str(&format!("{} Directory `{}/`\n\n", "#".repeat(header_level), dir_name));
-            
+            // dbg!(path);             
             let mut ignored_dirs = HashSet::new();
-            let tree_output = generate_tree_output(&path, &gitignore, &mut ignored_dirs);
+            let tree_output = generate_tree_output(&path, &filtered_entries, &mut ignored_dirs);
             output.push_str("```sh\n");
             output.push_str(&tree_output);
             output.push_str("```\n\n");
         } else {
             let file_type = detect_file_type(path);
+            // dbg!(path);
             match file_type {
                 FileType::Text => {
                     let source_file = rel_path.to_str().unwrap();
@@ -142,18 +154,18 @@ fn main() {
                         Ok(content) => output.push_str(&content),
                         Err(e) => {
                             warn!("Failed to read file: {:?}, error: {}", path, e);
-                            output.push_str("[Failed to read file contents]");
+                            // output.push_str("[Failed to read file contents]");
                         }
                     }
                     output.push_str("\n```\n\n");
                 }
                 FileType::Binary => {
                     warn!("Binary file not ignored by .gitignore: {:?}", rel_path);
-                    output.push_str(&format!("Binary file `{}` detected, consider adding it to .gitignore.\n\n", rel_path.display()));
+                    // output.push_str(&format!("Binary file `{}` detected, consider adding it to .gitignore.\n\n", rel_path.display()));
                 }
                 FileType::SymbolicLink => {
                     warn!("Symbolic link not ignored by .gitignore: {:?}", rel_path);
-                    output.push_str(&format!("Symbolic link `{}` detected, consider adding it to .gitignore.\n\n", rel_path.display()));
+                    // output.push_str(&format!("Symbolic link `{}` detected, consider adding it to .gitignore.\n\n", rel_path.display()));
                 }
             }
         }
@@ -170,33 +182,33 @@ fn main() {
         }
     }
 }
-fn generate_tree_output(dir: &Path, gitignore: &Gitignore, ignored_dirs: &mut HashSet<PathBuf>) -> String {
+fn generate_tree_output(dir: &Path, filtered_entries: &HashMap<PathBuf, Vec<DirEntry>>, ignored_dirs: &mut HashSet<PathBuf>) -> String {
     let mut output = String::new();
-    tree_recursive(dir, 0, gitignore, ignored_dirs, &mut output);
+    tree_recursive(dir, 0, filtered_entries, ignored_dirs, &mut output);
     output
 }
 
-fn tree_recursive(dir: &Path, level: usize, gitignore: &Gitignore, ignored_dirs: &mut HashSet<PathBuf>, output: &mut String) {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
+fn tree_recursive(
+    dir: &Path,
+    level: usize,
+    filtered_entries: &HashMap<PathBuf, Vec<DirEntry>>,
+    ignored_dirs: &mut HashSet<PathBuf>,
+    output: &mut String,
+) {
+    let entries = match filtered_entries.get(dir) {
+        Some(entries) => entries,
+        None => return,
     };
 
     let mut files = Vec::new();
     let mut dirs = Vec::new();
 
     for entry in entries {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            if gitignore.matched_path_or_any_parents(&path, path.is_dir()).is_ignore() {
-                ignored_dirs.insert(path.clone());
-                continue;
-            }
-            if path.is_dir() {
-                dirs.push(entry);
-            } else {
-                files.push(entry);
-            }
+        let path = entry.path();
+        if path.is_dir() {
+            dirs.push(entry);
+        } else {
+            files.push(entry);
         }
     }
 
@@ -217,7 +229,7 @@ fn tree_recursive(dir: &Path, level: usize, gitignore: &Gitignore, ignored_dirs:
         };
 
         output.push_str(&format!("{}{}{}/\n", "    ".repeat(level), prefix, name));
-        tree_recursive(&path, level + 1, gitignore, ignored_dirs, output);
+        tree_recursive(&path, level + 1, filtered_entries, ignored_dirs, output);
     }
 
     for (idx, entry) in files.iter().enumerate() {
