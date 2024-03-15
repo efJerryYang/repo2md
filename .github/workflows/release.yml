@@ -6,17 +6,9 @@ on:
       - 'v*'
 
 jobs:
-  release:
+  create_release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release
       - name: Create Release
         id: create_release
         uses: actions/create-release@v1
@@ -27,12 +19,61 @@ jobs:
           release_name: Release ${{ github.ref }}
           draft: false
           prerelease: false
+      - name: Output Release URL
+        run: echo "${{ steps.create_release.outputs.upload_url }}" > release_upload_url.txt
+      - uses: actions/upload-artifact@v2
+        with:
+          name: release_upload_url
+          path: release_upload_url.txt
+
+  release:
+    name: Release on ${{ matrix.os }}
+    needs: create_release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: repo2md-x86_64-unknown-linux-gnu
+            asset_name: repo2md-x86_64-unknown-linux-gnu
+            artifact_suffix: ""
+          - os: windows-latest
+            artifact_name: repo2md-x86_64-pc-windows-msvc.exe
+            asset_name: repo2md-x86_64-pc-windows-msvc.exe
+            artifact_suffix: ".exe"
+          - os: macOS-latest
+            artifact_name: repo2md-x86_64-apple-darwin
+            asset_name: repo2md-x86_64-apple-darwin
+            artifact_suffix: ""
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release
+      - name: Rename release asset
+        shell: bash
+        run: |
+          mv target/release/repo2md${{ matrix.artifact_suffix }} target/release/${{ matrix.artifact_name }}
+      - uses: actions/download-artifact@v2
+        with:
+          name: release_upload_url
+      - name: Read Release URL
+        shell: bash
+        id: release_info
+        run: |
+          value=`cat release_upload_url.txt`
+          echo "upload_url=$value" >> $GITHUB_OUTPUT
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./target/release/repo2md
-          asset_name: repo2md-x86_64-linux
+          upload_url: ${{ steps.release_info.outputs.upload_url }}
+          asset_path: target/release/${{ matrix.artifact_name }}
+          asset_name: ${{ matrix.asset_name }}
           asset_content_type: application/octet-stream
