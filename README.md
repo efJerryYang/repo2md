@@ -5,23 +5,22 @@
 ## Usage
 
 ```bash
-repo2md <path_to_repo> [options]
+Usage: repo2md <REPO> [OPTIONS]
 
-Args:
-  <path_to_repo>  Path to the repository to document
+Arguments:
+  <REPO>  Path to the local repository
 
 Options:
-  --include <pattern1> <pattern2> ...
-                         Include only files matching these patterns
-  (--ignore|--exclude) <pattern1> <pattern2> ...
-                         Ignore files matching these patterns
-  --help                 Display this message
+      --include          <INCLUDE>...  Patterns of files/directories to include
+      --ignore/--exclude <IGNORE>...   Patterns of files/directories to ignore/exclude
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 Or clone this project and run with `cargo` from this project root:
 
 ```bash
-cargo run -- <path_to_repo> [options]
+cargo run -- <REPO> [OPTIONS]
 ```
 
 ## Example Output
@@ -30,6 +29,6 @@ See [example_repo2md.md](example_repo2md.md) for an example of the output of thi
 
 ```sh
 cargo run --  .
-# Or
+# or
 repo2md .
 ```
