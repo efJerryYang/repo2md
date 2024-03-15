@@ -122,7 +122,12 @@ fn main() {
             for entry in fs::read_dir(path).unwrap() {
                 let entry = entry.unwrap();
                 let entry_path = entry.path();
-                if !gitignore.matched_path_or_any_parents(&entry_path, entry_path.is_dir()).is_ignore() {
+                let mut sub_gitignore = GitignoreBuilder::new(&entry_path);
+                if entry_path.ends_with(".gitingore") {
+                    sub_gitignore.add(&entry_path);
+                }
+                if !gitignore.matched_path_or_any_parents(&entry_path, entry_path.is_dir()).is_ignore() 
+                && !sub_gitignore.build().unwrap().matched_path_or_any_parents(&entry_path, entry_path.is_dir()).is_ignore(){
                     dir_entries.push(entry);
                 }
             }
