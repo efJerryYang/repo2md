@@ -5,12 +5,8 @@
 ```sh
 |-- .git/
 |-- .github/
-    `-- workflows/
-        `-- release.yml    [text]
 |-- docs/
-    `-- spec.md    [text]
 |-- src/
-    `-- main.rs    [text]
 |-- .gitignore    [text]
 |-- Cargo.toml    [text]
 `-- README.md    [text]
@@ -73,13 +69,13 @@ predicates = "2.1.1"
 
 ```rust
 use clap::Parser;
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use ignore::gitignore::GitignoreBuilder;
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, warn};
-use std::fs;
+use std::fs::{self, DirEntry};
 use std::path::{Path, PathBuf};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use strum_macros::Display;
 use walkdir::WalkDir;
 
@@ -109,7 +105,24 @@ enum FileType {
 fn main() {
     env_logger::init();
 
-    let cli = Cli::parse();
+    let cli = Cli::try_parse();
+    let cli = match cli {
+        Ok(cli) => cli,
+        Err(e) => {
+            if e.to_string().contains("not provided") {
+                eprintln!("Error: No repository path provided.");
+                eprintln!("Hint: Maybe you wanted to say 'repo2md .'?");
+                std::process::exit(1);
+            } else if e.to_string().contains("Usage") {
+                println!("{}", e);
+                std::process::exit(0);
+            } else {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+    };
+    
     let repo_path_buf = Path::new(&cli.repo).canonicalize().unwrap();
     let repo_path = repo_path_buf.as_path();
 
@@ -130,7 +143,9 @@ fn main() {
     // add `.git/` to the ignore list
     gitignore.add_line(None, ".git/**").unwrap();
     // add content of `.gitignore` to the ignore list
-    gitignore.add(".gitignore");
+    gitignore.add(repo_path.join(".gitignore"));
+    gitignore.add(repo_path.join(".git/info/exclude"));
+    debug!("Gitignore: {:?}", &gitignore);
 
     let include_patterns: Vec<_> = cli.include.iter().map(|p| p.as_str()).collect();
     let walker = WalkBuilder::new(repo_path)
@@ -154,34 +169,46 @@ fn main() {
             .template("{spinner:.green} [{elapsed_precise}] Traversing {wide_msg}")
             .unwrap(),
     );
+    // dbg!(&gitignore);
 
     let gitignore = gitignore.build().unwrap();
+    let mut filtered_entries: HashMap<PathBuf, Vec<DirEntry>> = HashMap::new();
     for entry in walker.filter_map(|e| e.ok()) {
         let path = entry.path();
         let rel_path = path.strip_prefix(repo_path).unwrap();
         let rel_path_buf = rel_path.to_path_buf();
         
         if gitignore.matched(&rel_path_buf, rel_path_buf.is_dir()).is_ignore() && !include_patterns.iter().any(|p| rel_path.starts_with(p)) {
-            debug!("Ignoring: {:?}", rel_path);
             if path.is_dir() {
                 // Skip ignored directories
                 WalkDir::new(path).max_depth(1).into_iter().for_each(drop);
             }
             continue;
         }
+        // dbg!(path);
         progress_bar.set_message(format!("{}", rel_path.display()));
         if path.is_dir() {
+            let mut dir_entries = Vec::new();
+            for entry in fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                let entry_path = entry.path();
+                if !gitignore.matched_path_or_any_parents(&entry_path, entry_path.is_dir()).is_ignore() {
+                    dir_entries.push(entry);
+                }
+            }
+            filtered_entries.insert(path.to_path_buf(), dir_entries);
             let dir_name = rel_path.to_str().unwrap();
             let header_level = rel_path.components().count() + 2;
             output.push_str(&format!("{} Directory `{}/`\n\n", "#".repeat(header_level), dir_name));
-            
+            // dbg!(path);             
             let mut ignored_dirs = HashSet::new();
-            let tree_output = generate_tree_output(&path, &gitignore, &mut ignored_dirs);
+            let tree_output = generate_tree_output(&path, &filtered_entries, &mut ignored_dirs);
             output.push_str("```sh\n");
             output.push_str(&tree_output);
             output.push_str("```\n\n");
         } else {
             let file_type = detect_file_type(path);
+            // dbg!(path);
             match file_type {
                 FileType::Text => {
                     let source_file = rel_path.to_str().unwrap();
@@ -199,18 +226,18 @@ fn main() {
                         Ok(content) => output.push_str(&content),
                         Err(e) => {
                             warn!("Failed to read file: {:?}, error: {}", path, e);
-                            output.push_str("[Failed to read file contents]");
+                            // output.push_str("[Failed to read file contents]");
                         }
                     }
                     output.push_str("\n```\n\n");
                 }
                 FileType::Binary => {
                     warn!("Binary file not ignored by .gitignore: {:?}", rel_path);
-                    output.push_str(&format!("Binary file `{}` detected, consider adding it to .gitignore.\n\n", rel_path.display()));
+                    // output.push_str(&format!("Binary file `{}` detected, consider adding it to .gitignore.\n\n", rel_path.display()));
                 }
                 FileType::SymbolicLink => {
                     warn!("Symbolic link not ignored by .gitignore: {:?}", rel_path);
-                    output.push_str(&format!("Symbolic link `{}` detected, consider adding it to .gitignore.\n\n", rel_path.display()));
+                    // output.push_str(&format!("Symbolic link `{}` detected, consider adding it to .gitignore.\n\n", rel_path.display()));
                 }
             }
         }
@@ -227,33 +254,33 @@ fn main() {
         }
     }
 }
-fn generate_tree_output(dir: &Path, gitignore: &Gitignore, ignored_dirs: &mut HashSet<PathBuf>) -> String {
+fn generate_tree_output(dir: &Path, filtered_entries: &HashMap<PathBuf, Vec<DirEntry>>, ignored_dirs: &mut HashSet<PathBuf>) -> String {
     let mut output = String::new();
-    tree_recursive(dir, 0, gitignore, ignored_dirs, &mut output);
+    tree_recursive(dir, 0, filtered_entries, ignored_dirs, &mut output);
     output
 }
 
-fn tree_recursive(dir: &Path, level: usize, gitignore: &Gitignore, ignored_dirs: &mut HashSet<PathBuf>, output: &mut String) {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
+fn tree_recursive(
+    dir: &Path,
+    level: usize,
+    filtered_entries: &HashMap<PathBuf, Vec<DirEntry>>,
+    ignored_dirs: &mut HashSet<PathBuf>,
+    output: &mut String,
+) {
+    let entries = match filtered_entries.get(dir) {
+        Some(entries) => entries,
+        None => return,
     };
 
     let mut files = Vec::new();
     let mut dirs = Vec::new();
 
     for entry in entries {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            if gitignore.matched_path_or_any_parents(&path, path.is_dir()).is_ignore() {
-                ignored_dirs.insert(path.clone());
-                continue;
-            }
-            if path.is_dir() {
-                dirs.push(entry);
-            } else {
-                files.push(entry);
-            }
+        let path = entry.path();
+        if path.is_dir() {
+            dirs.push(entry);
+        } else {
+            files.push(entry);
         }
     }
 
@@ -274,7 +301,7 @@ fn tree_recursive(dir: &Path, level: usize, gitignore: &Gitignore, ignored_dirs:
         };
 
         output.push_str(&format!("{}{}{}/\n", "    ".repeat(level), prefix, name));
-        tree_recursive(&path, level + 1, gitignore, ignored_dirs, output);
+        tree_recursive(&path, level + 1, filtered_entries, ignored_dirs, output);
     }
 
     for (idx, entry) in files.iter().enumerate() {
@@ -454,23 +481,22 @@ By addressing these requirements, the Repository-to-Markdown Conversion Tool wil
 ## Usage
 
 ```bash
-repo2md <path_to_repo> [options]
+Usage: repo2md <REPO> [OPTIONS]
 
-Args:
-  <path_to_repo>  Path to the repository to document
+Arguments:
+  <REPO>  Path to the local repository
 
 Options:
-  --include <pattern1> <pattern2> ...
-                         Include only files matching these patterns
-  (--ignore|--exclude) <pattern1> <pattern2> ...
-                         Ignore files matching these patterns
-  --help                 Display this message
+      --include          <INCLUDE>...  Patterns of files/directories to include
+      --ignore/--exclude <IGNORE>...   Patterns of files/directories to ignore/exclude
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 Or clone this project and run with `cargo` from this project root:
 
 ```bash
-cargo run -- <path_to_repo> [options]
+cargo run -- <REPO> [OPTIONS]
 ```
 
 ## Example Output
@@ -478,7 +504,9 @@ cargo run -- <path_to_repo> [options]
 See [example_repo2md.md](example_repo2md.md) for an example of the output of this tool.
 
 ```sh
-cargo run --  path/to/project/ --ignore benchmarks/ .idea/
+cargo run --  .
+# or
+repo2md .
 ```
 
 ```
@@ -487,13 +515,148 @@ cargo run --  path/to/project/ --ignore benchmarks/ .idea/
 
 ```sh
 `-- workflows/
-    `-- release.yml    [text]
 ```
 
 #### Directory `.github/workflows/`
 
 ```sh
+|-- release/
 `-- release.yml    [text]
+```
+
+##### Directory `.github/workflows/release/`
+
+```sh
+|-- macos.yml    [text]
+|-- ubuntu.yml    [text]
+`-- windows.yml    [text]
+```
+
+### Source file: `.github/workflows/release/ubuntu.yml`
+
+```yml
+# name: Release Ubuntu
+
+# on:
+#   push:
+#     tags:
+#       - 'v*'
+
+# jobs:
+#   release-ubuntu:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v2
+      
+#       - name: Set up Rust
+#         uses: actions-rs/toolchain@v1
+#         with:
+#           toolchain: stable
+#           target: x86_64-unknown-linux-gnu
+#           override: true
+
+#       - name: Build
+#         uses: actions-rs/cargo@v1
+#         with:
+#           command: build
+#           args: --release --target x86_64-unknown-linux-gnu
+
+#       - name: Rename binary for release
+#         run: |
+#           mv ./target/x86_64-unknown-linux-gnu/release/repo2md ./target/x86_64-unknown-linux-gnu/release/repo2md-x86_64-unknown-linux-gnu
+
+```
+
+### Source file: `.github/workflows/release/windows.yml`
+
+```yml
+# name: Release Windows
+
+# on:
+#   push:
+#     tags:
+#       - 'v*'
+
+# jobs:
+#   release-windows:
+#     runs-on: windows-latest
+#     steps:
+#       - uses: actions/checkout@v2
+      
+#       - name: Set up Rust
+#         uses: actions-rs/toolchain@v1
+#         with:
+#           toolchain: stable
+#           target: x86_64-pc-windows-msvc
+#           override: true
+
+#       - name: Build
+#         uses: actions-rs/cargo@v1
+#         with:
+#           command: build
+#           args: --release --target x86_64-pc-windows-msvc
+
+#       - name: Rename binary for release
+#         run: |
+#           mv ./target/x86_64-pc-windows-msvc/release/repo2md.exe ./target/x86_64-pc-windows-msvc/release/repo2md-x86_64-pc-windows-msvc.exe
+
+```
+
+### Source file: `.github/workflows/release/macos.yml`
+
+```yml
+# name: Release macOS
+
+# on:
+#   push:
+#     tags:
+#       - 'v*'
+
+# jobs:
+#   release-macos:
+#     runs-on: macos-latest
+#     steps:
+#       - uses: actions/checkout@v2
+      
+#       - name: Set up Rust
+#         uses: actions-rs/toolchain@v1
+#         with:
+#           toolchain: stable
+#           target: x86_64-apple-darwin
+#           override: true
+
+#       - name: Build
+#         uses: actions-rs/cargo@v1
+#         with:
+#           command: build
+#           args: --release --target x86_64-apple-darwin
+
+#       - name: Rename binary for release
+#         run: |
+#           mv ./target/x86_64-apple-darwin/release/repo2md ./target/x86_64-apple-darwin/release/repo2md-x86_64-apple-darwin
+
+#       - name: Create Release
+#         id: create_release
+#         if: github.ref == 'refs/heads/main'
+#         uses: actions/create-release@v1
+#         env:
+#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#         with:
+#           tag_name: ${{ github.ref }}
+#           release_name: Release ${{ github.ref }}
+#           draft: false
+#           prerelease: false
+
+#       - name: Upload Release Asset
+#         uses: actions/upload-release-asset@v1
+#         env:
+#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#         with:
+#           upload_url: ${{ steps.create_release.outputs.upload_url }}
+#           asset_path: ./target/x86_64-apple-darwin/release/repo2md-x86_64-apple-darwin
+#           asset_name: repo2md-x86_64-apple-darwin
+#           asset_content_type: application/octet-stream
+
 ```
 
 ### Source file: `.github/workflows/release.yml`
