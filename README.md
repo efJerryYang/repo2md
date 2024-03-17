@@ -32,3 +32,8 @@ cargo run --  .
 # or
 repo2md .
 ```
+
+## TODO
+
+- [ ] Auto-completion (relative path from the repository root)
+- [ ] Add default `.gitignore` patterns for different languages (point to github repo, cache locally)
