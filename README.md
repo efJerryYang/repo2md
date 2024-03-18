@@ -36,4 +36,10 @@ repo2md .
 ## TODO
 
 - [ ] Auto-completion (relative path from the repository root)
+  - [ ] use `clap-complete` to handle this
 - [ ] Add default `.gitignore` patterns for different languages (point to github repo, cache locally)
+  - [ ] maybe we can have `resources` directory and build the binary with the resources
+- [ ] Allow automatic update using `--update` or `--upgrade` command
+  - [ ] find the latest version from the github repo
+  - [ ] locate the binary in the system like `which repo2md` command
+  - [ ] download the latest version and try to replace the current binary (should use `sudo` if necessary, distinguish between different OS) 
